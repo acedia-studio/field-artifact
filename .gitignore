@@ -1,0 +1,8 @@
+node_modules/
+public/
+vendor/
+test.mjs
+shot.mjs
+package.json
+package-lock.json
+/tmp

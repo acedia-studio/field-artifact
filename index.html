@@ -403,12 +403,13 @@
       return { name:e.tags.name, ele, d };
     }).filter(e=>e.name);
     if (!els.length) return null;
-    // prefer the highest peak within range, tie-break by distance
-    els.sort((a,b)=> ( (b.ele||0)-(a.ele||0) ) || (a.d-b.d) );
-    // but if the very nearest is much closer, keep it
-    const nearest = [...els].sort((a,b)=>a.d-b.d)[0];
-    const highest = els[0];
-    return (nearest.d < highest.d*0.4) ? nearest : highest;
+    // prefer the DOMINANT peak (the mountain the shot is "about"): high elevation,
+    // penalized by distance so a big peak a few km off beats a tiny nearby bump.
+    const withEle = els.filter(e=>e.ele!=null);
+    if (!withEle.length) return els.sort((a,b)=>a.d-b.d)[0]; // no elevations -> nearest
+    const PEN = 250; // meters of "value" lost per km of distance
+    withEle.sort((a,b)=> (b.ele - b.d*PEN) - (a.ele - a.d*PEN));
+    return withEle[0];
   }
 
   async function weatherAt(lat,lon,d){

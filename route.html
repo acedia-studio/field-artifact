@@ -106,10 +106,10 @@
   const setStatus=(t,live=false)=>{ $("#statustxt").textContent=t; $("#status").classList.toggle("live",live); };
   const OVERPASS=["https://maps.mail.ru/osm/tools/overpass/api/interpreter","https://overpass.kumi.systems/api/interpreter"];
 
-  const S={ mode:"route", radius:3, base:"blueprint", rc:"#f4f3ee", pw:5, cop:0.3, bg:"#000000",
+  const S={ mode:"route", radius:3, base:"blueprint", rc:"#f4f3ee", pw:5, cop:0.3, bg:"transparent",
             markers:true, frame:true, glow:false, paper:false, blue:false,
             layers:new Set(["water","waterway","path","road"]) };
-  const BGS=["#000000","#0b0b0c","#f4f3ee","#0a1836"];
+  const BGS=["transparent","#000000","#f4f3ee","#0e2f66"];
   const RCS=["#f4f3ee","#111111","#e8442c","#e8613c","#1a3a6b"];
   // base map tile sources (all CORS-enabled for canvas export)
   const sub=(txy)=>"abc"[(txy)%3];
@@ -156,9 +156,29 @@
   function makeSquare(v){ const cLat=(v.minLat+v.maxLat)/2, cLon=(v.minLon+v.maxLon)/2, kx=Math.cos(cLat*Math.PI/180);
     const half=Math.max((v.maxLat-v.minLat)/2, (v.maxLon-v.minLon)/2*kx, 0.0004), lh=half/kx;
     return {minLat:cLat-half, maxLat:cLat+half, minLon:cLon-lh, maxLon:cLon+lh}; }
-  function blueDuotone(g,W,H){ const d=g.getImageData(0,0,W,H), a=d.data, lo=[12,32,72], hi=[226,238,255];
-    for(let i=0;i<a.length;i+=4){ const t=a[i]/255; a[i]=lo[0]+(hi[0]-lo[0])*t; a[i+1]=lo[1]+(hi[1]-lo[1])*t; a[i+2]=lo[2]+(hi[2]-lo[2])*t; }
-    g.putImageData(d,0,0); }
+  const hexRGB=h=>{ h=h.replace("#",""); if(h.length===3)h=h.split("").map(x=>x+x).join(""); return [parseInt(h.slice(0,2),16),parseInt(h.slice(2,4),16),parseInt(h.slice(4,6),16)]; };
+  const isLight=h=>{ if(h==="transparent")return false; const [r,g,b]=hexRGB(h); return (0.299*r+0.587*g+0.114*b)>140; };
+  // extract linework only: high-pass (orig - blur) keeps contour/label/edge lines, drops smooth hillshade.
+  function lineExtract(c,W,H){
+    const g=c.getContext("2d");
+    const gray=document.createElement("canvas"); gray.width=W; gray.height=H; const gg=gray.getContext("2d");
+    gg.filter="grayscale(1)"; gg.drawImage(c,0,0); gg.filter="none";
+    const bl=document.createElement("canvas"); bl.width=W; bl.height=H; const bb=bl.getContext("2d");
+    bb.filter="grayscale(1) blur("+Math.max(2,Math.round(W/150))+"px)"; bb.drawImage(c,0,0); bb.filter="none";
+    const A=gg.getImageData(0,0,W,H).data, B=bb.getImageData(0,0,W,H).data;
+    const K=3.4, gamma=0.72;
+    const transparent=(S.bg==="transparent");
+    const bgRGB = transparent?[0,0,0] : hexRGB(S.blue?"#0e2f66":S.bg);
+    const lineRGB = S.blue?[228,238,255] : ((isLight(S.bg)&&!transparent)?[24,22,20]:[244,243,238]);
+    const out=g.createImageData(W,H), o=out.data;
+    for(let i=0;i<A.length;i+=4){
+      let hp=(B[i]-A[i])*K; hp=hp<0?0:hp>255?255:hp;   // dark line on lighter ground -> positive
+      const s=Math.pow(hp/255, gamma);                  // line strength 0..1 (soft shading -> ~0)
+      if(transparent){ o[i]=lineRGB[0]; o[i+1]=lineRGB[1]; o[i+2]=lineRGB[2]; o[i+3]=Math.round(s*255); }
+      else { o[i]=bgRGB[0]*(1-s)+lineRGB[0]*s; o[i+1]=bgRGB[1]*(1-s)+lineRGB[1]*s; o[i+2]=bgRGB[2]*(1-s)+lineRGB[2]*s; o[i+3]=255; }
+    }
+    g.clearRect(0,0,W,H); g.putImageData(out,0,0);
+  }
 
   async function buildRasterBase(view){
     const src=BASES[S.base], target=1900, z=pickZoom(view,target,src.maxz);
@@ -166,17 +186,15 @@
     let W=x1-x0, H=y1-y0; const sz=Math.round(Math.max(W,H)); // perfect square
     const cx=(x0+x1)/2, cy=(y0+y1)/2; x0=cx-sz/2; y0=cy-sz/2; W=H=sz;
     const c=document.createElement("canvas"); c.width=W; c.height=H; const g=c.getContext("2d");
-    g.fillStyle=src.bw?"#0b0b0c":"#efe9dc"; g.fillRect(0,0,W,H);
-    if(src.bw) g.filter="grayscale(1) contrast(1.72) brightness(1.06)";
+    if(!src.bw){ g.fillStyle="#efe9dc"; g.fillRect(0,0,W,H); }
     const n=2**z, tx0=Math.floor(x0/256),tx1=Math.floor((x0+W)/256),ty0=Math.floor(y0/256),ty1=Math.floor((y0+H)/256);
     const jobs=[];
     for(let tx=tx0;tx<=tx1;tx++)for(let ty=ty0;ty<=ty1;ty++){ const wx=((tx%n)+n)%n;
       jobs.push(loadTile(src.url(z,wx,ty)).then(im=>{ if(im) g.drawImage(im, tx*256-x0, ty*256-y0, 256,256); }));
     }
     await Promise.all(jobs);
-    g.filter="none";
-    if(src.bw && S.blue) blueDuotone(g,W,H);
-    if(!src.bw && (S.paper||src.paper)){ g.globalCompositeOperation="multiply"; g.fillStyle="#e9dcc2"; g.fillRect(0,0,W,H);
+    if(src.bw){ lineExtract(c,W,H); }                     // kill soft hillshade, keep linework
+    else if(S.paper||src.paper){ g.globalCompositeOperation="multiply"; g.fillStyle="#e9dcc2"; g.fillRect(0,0,W,H);
       g.globalCompositeOperation="source-over"; }
     // upscale small areas so exports are poster-sized
     let outC=c, scale=1; const MIN=1560;
@@ -265,8 +283,8 @@
       const stroke=(col,w,al)=>{ g.strokeStyle=col; g.globalAlpha=al; g.lineWidth=w; g.lineJoin="round"; g.lineCap="round";
         for(const l of primary){ g.beginPath(); l.forEach((pt,i)=>{const [x,y]=project(pt);i?g.lineTo(x,y):g.moveTo(x,y);}); g.stroke(); } };
       if(S.glow) stroke(S.rc, wpx+7*unit, 0.18);
-      // dark casing so the trail reads as the hero over busy relief (stronger in blueprint)
-      stroke(bp?"rgba(0,0,0,.9)":"rgba(0,0,0,.55)", wpx+(bp?3.4:2.4)*unit, bp?0.9:0.5);
+      // dark casing so the trail reads as the hero over busy relief — skipped on transparent (would halo an overlay)
+      if(S.bg!=="transparent") stroke(bp?"rgba(0,0,0,.9)":"rgba(0,0,0,.55)", wpx+(bp?3.4:2.4)*unit, bp?0.9:0.5);
       stroke(S.rc, wpx, 1);
       if(S.markers){
         const flat=primary.flat(); const A=project(flat[0]), B=project(flat[flat.length-1]);
@@ -278,7 +296,7 @@
       }
     }
     if(S.frame){ const margin=Math.round(Math.min(W,H)*0.05), len=margin*0.9, fm=margin;
-      const dark=(S.base!=="line"||S.bg==="#f2ece0"); g.strokeStyle=dark?"rgba(30,26,20,.65)":"rgba(244,243,238,.5)"; g.globalAlpha=1; g.lineWidth=Math.max(1,unit);
+      g.strokeStyle=isLight(S.bg)?"rgba(30,26,20,.7)":"rgba(244,243,238,.6)"; g.globalAlpha=1; g.lineWidth=Math.max(1,unit);
       [[fm,fm,1,1],[W-fm,fm,-1,1],[fm,H-fm,1,-1],[W-fm,H-fm,-1,-1]].forEach(([x,y,sx,sy])=>{
         g.beginPath(); g.moveTo(x,y); g.lineTo(x+sx*len,y); g.moveTo(x,y); g.lineTo(x,y+sy*len); g.stroke(); });
     }
@@ -287,17 +305,20 @@
   function exportPNG(){ const a=document.createElement("a"); a.download="route-outline.png"; a.href=cv.toDataURL("image/png"); a.click(); }
 
   // ---- UI ----
-  function syncModeUI(){ $("#linesec").style.display=S.base==="line"?"":"none"; $("#bgctl").style.display=S.base==="line"?"":"none"; $("#ctxctl").style.display=S.base==="line"?"":"none"; }
+  function syncModeUI(){ const line=S.base==="line", bw=!!BASES[S.base].bw;
+    $("#linesec").style.display=line?"":"none"; $("#ctxctl").style.display=line?"":"none";
+    $("#bgctl").style.display=(line||bw)?"":"none"; } // blueprint needs bg (transparent/black/blue)
   function chips(host,opts,cur,cb){ const h=$(host); opts.forEach(([v,l])=>{ const c=document.createElement("span");
     c.className="chip"+(cur===v?" on":""); c.textContent=l; c.onclick=()=>{ [...h.children].forEach(x=>x.classList.remove("on")); c.classList.add("on"); cb(v); }; h.append(c); }); }
   function swics(host,arr,cur,cb){ const h=$(host); arr.forEach(hex=>{ const s=document.createElement("span"); s.className="sw"+(cur===hex?" on":"");
-    s.style.background=hex; s.title=hex; s.onclick=()=>{ [...h.children].forEach(x=>x.classList.remove("on")); s.classList.add("on"); cb(hex); }; h.append(s); }); }
+    s.style.background=hex==="transparent"?"repeating-conic-gradient(#444 0 25%,#222 0 50%) 50%/10px 10px":hex; s.title=hex;
+    s.onclick=()=>{ [...h.children].forEach(x=>x.classList.remove("on")); s.classList.add("on"); cb(hex); }; h.append(s); }); }
   const radLabel=()=>{ if(S.mode==="area"){ $("#radlbl").textContent=S.radius.toFixed(1)+"km"; }
     else { const mf=S.radius/15; $("#radlbl").textContent="~"+Math.round(100/(1+2*mf))+"%"; } };
   chips("#mode",[["route","Route"],["area","Area"]],S.mode,v=>{S.mode=v; radLabel(); });
   chips("#base",Object.entries(BASES).map(([k,v])=>[k,v.label]),S.base,v=>{ S.base=v; syncModeUI(); if(view) compose(); });
   swics("#rc",RCS,S.rc,v=>{S.rc=v;render();});
-  swics("#bg",BGS,S.bg,v=>{S.bg=v; if(view&&S.base==="line") compose();});
+  swics("#bg",BGS,S.bg,v=>{S.bg=v; if(view&&(S.base==="line"||BASES[S.base].bw)) compose(); else render();});
   const LAYERS=[["water","Water"],["waterway","Rivers"],["path","Trails"],["road","Roads"]];
   { const h=$("#layers"); LAYERS.forEach(([k,l])=>{ const t=document.createElement("span"); t.className="tog"+(S.layers.has(k)?" on":""); t.textContent=l;
     t.onclick=()=>{ S.layers.has(k)?S.layers.delete(k):S.layers.add(k); t.classList.toggle("on"); if(view&&S.base==="line")compose(); }; h.append(t); }); }

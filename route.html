@@ -88,6 +88,7 @@
       <span class="tog on" data-flag="frame">Frame</span>
       <span class="tog" data-flag="glow">Route glow</span>
       <span class="tog" data-flag="paper">Paper tint</span>
+      <span class="tog" data-flag="blue">Blueprint blue</span>
     </div>
   </div>
 
@@ -105,14 +106,15 @@
   const setStatus=(t,live=false)=>{ $("#statustxt").textContent=t; $("#status").classList.toggle("live",live); };
   const OVERPASS=["https://maps.mail.ru/osm/tools/overpass/api/interpreter","https://overpass.kumi.systems/api/interpreter"];
 
-  const S={ mode:"route", radius:3, base:"line", rc:"#f4f3ee", pw:4.5, cop:0.3, bg:"#000000",
-            markers:true, frame:true, glow:false, paper:false,
+  const S={ mode:"route", radius:3, base:"blueprint", rc:"#f4f3ee", pw:5, cop:0.3, bg:"#000000",
+            markers:true, frame:true, glow:false, paper:false, blue:false,
             layers:new Set(["water","waterway","path","road"]) };
   const BGS=["#000000","#0b0b0c","#f4f3ee","#0a1836"];
   const RCS=["#f4f3ee","#111111","#e8442c","#e8613c","#1a3a6b"];
   // base map tile sources (all CORS-enabled for canvas export)
   const sub=(txy)=>"abc"[(txy)%3];
   const BASES={
+    blueprint:{label:"Blueprint", url:(z,x,y)=>`https://${sub(x+y)}.tile.opentopomap.org/${z}/${x}/${y}.png`, maxz:17, bw:true},
     topo:   {label:"Topo",     url:(z,x,y)=>`https://${sub(x+y)}.tile.opentopomap.org/${z}/${x}/${y}.png`, maxz:17, paper:false},
     terrain:{label:"Relief",   url:(z,x,y)=>`https://services.arcgisonline.com/ArcGIS/rest/services/Elevation/World_Hillshade/MapServer/tile/${z}/${y}/${x}`, maxz:16, paper:true},
     esritopo:{label:"Survey",  url:(z,x,y)=>`https://services.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/${z}/${y}/${x}`, maxz:19, paper:false},
@@ -150,29 +152,42 @@
   }
   const loadTile=url=>new Promise(res=>{ const im=new Image(); im.crossOrigin="anonymous"; im.onload=()=>res(im); im.onerror=()=>res(null); im.src=url; });
 
+  // force a square geographic view (canvas is always 1:1)
+  function makeSquare(v){ const cLat=(v.minLat+v.maxLat)/2, cLon=(v.minLon+v.maxLon)/2, kx=Math.cos(cLat*Math.PI/180);
+    const half=Math.max((v.maxLat-v.minLat)/2, (v.maxLon-v.minLon)/2*kx, 0.0004), lh=half/kx;
+    return {minLat:cLat-half, maxLat:cLat+half, minLon:cLon-lh, maxLon:cLon+lh}; }
+  function blueDuotone(g,W,H){ const d=g.getImageData(0,0,W,H), a=d.data, lo=[12,32,72], hi=[226,238,255];
+    for(let i=0;i<a.length;i+=4){ const t=a[i]/255; a[i]=lo[0]+(hi[0]-lo[0])*t; a[i+1]=lo[1]+(hi[1]-lo[1])*t; a[i+2]=lo[2]+(hi[2]-lo[2])*t; }
+    g.putImageData(d,0,0); }
+
   async function buildRasterBase(view){
     const src=BASES[S.base], target=1900, z=pickZoom(view,target,src.maxz);
-    const [x0,y0]=merc(view.maxLat,view.minLon,z), [x1,y1]=merc(view.minLat,view.maxLon,z);
-    const W=Math.round(x1-x0), H=Math.round(y1-y0);
+    let [x0,y0]=merc(view.maxLat,view.minLon,z), [x1,y1]=merc(view.minLat,view.maxLon,z);
+    let W=x1-x0, H=y1-y0; const sz=Math.round(Math.max(W,H)); // perfect square
+    const cx=(x0+x1)/2, cy=(y0+y1)/2; x0=cx-sz/2; y0=cy-sz/2; W=H=sz;
     const c=document.createElement("canvas"); c.width=W; c.height=H; const g=c.getContext("2d");
-    g.fillStyle="#efe9dc"; g.fillRect(0,0,W,H);
-    const tx0=Math.floor(x0/256),tx1=Math.floor(x1/256),ty0=Math.floor(y0/256),ty1=Math.floor(y1/256);
+    g.fillStyle=src.bw?"#0b0b0c":"#efe9dc"; g.fillRect(0,0,W,H);
+    if(src.bw) g.filter="grayscale(1) contrast(1.72) brightness(1.06)";
+    const n=2**z, tx0=Math.floor(x0/256),tx1=Math.floor((x0+W)/256),ty0=Math.floor(y0/256),ty1=Math.floor((y0+H)/256);
     const jobs=[];
-    for(let tx=tx0;tx<=tx1;tx++)for(let ty=ty0;ty<=ty1;ty++){
-      const n=2**z; const wx=((tx%n)+n)%n;
+    for(let tx=tx0;tx<=tx1;tx++)for(let ty=ty0;ty<=ty1;ty++){ const wx=((tx%n)+n)%n;
       jobs.push(loadTile(src.url(z,wx,ty)).then(im=>{ if(im) g.drawImage(im, tx*256-x0, ty*256-y0, 256,256); }));
     }
     await Promise.all(jobs);
-    if(S.paper||src.paper){ g.globalCompositeOperation="multiply"; g.fillStyle="#e9dcc2"; g.fillRect(0,0,W,H);
+    g.filter="none";
+    if(src.bw && S.blue) blueDuotone(g,W,H);
+    if(!src.bw && (S.paper||src.paper)){ g.globalCompositeOperation="multiply"; g.fillStyle="#e9dcc2"; g.fillRect(0,0,W,H);
       g.globalCompositeOperation="source-over"; }
-    const project=([lat,lon])=>{ const [x,y]=merc(lat,lon,z); return [x-x0,y-y0]; };
-    return {canvas:c,project,W,H};
+    // upscale small areas so exports are poster-sized
+    let outC=c, scale=1; const MIN=1560;
+    if(W<MIN){ scale=MIN/W; outC=document.createElement("canvas"); outC.width=outC.height=Math.round(W*scale);
+      const og=outC.getContext("2d"); og.imageSmoothingEnabled=true; og.imageSmoothingQuality="high"; og.drawImage(c,0,0,outC.width,outC.height); }
+    const project=([lat,lon])=>{ const [x,y]=merc(lat,lon,z); return [(x-x0)*scale,(y-y0)*scale]; };
+    return {canvas:outC,project,W:outC.width,H:outC.height};
   }
   function buildVectorBase(view,context){
     const cLat=(view.minLat+view.maxLat)/2, kx=Math.cos(cLat*Math.PI/180);
-    const ar=((view.maxLon-view.minLon)*kx)/((view.maxLat-view.minLat)||1);
-    const LONG=1800; let W,H; if(ar>=1){W=LONG;H=Math.round(LONG/ar);}else{H=LONG;W=Math.round(LONG*ar);}
-    W=Math.max(600,W);H=Math.max(600,H);
+    const W=1800, H=1800; // square
     const c=document.createElement("canvas"); c.width=W;c.height=H; const g=c.getContext("2d");
     if(S.bg!=="transparent"){ g.fillStyle=S.bg; g.fillRect(0,0,W,H); }
     const margin=Math.round(Math.min(W,H)*0.06), iw=W-margin*2, ih=H-margin*2;
@@ -210,7 +225,7 @@
       if(lat==null){ setStatus("couldn't find that place",false); return; }
       viewBox=padBox({minLat:lat,maxLat:lat,minLon:lon,maxLon:lon}, S.radius);
     }
-    view=viewBox;
+    view=makeSquare(viewBox);
     await compose();
     $("#export").disabled=false;
     const np=primary.reduce((s,l)=>s+l.length,0);
@@ -245,14 +260,14 @@
     const g=ctx, unit=Math.min(W,H)/900;
     // primary route
     if(primary.length){
-      const wpx=S.pw*unit;
-      if(S.glow){ g.strokeStyle=S.rc; g.globalAlpha=0.18; g.lineWidth=wpx+7*unit; g.lineJoin="round"; g.lineCap="round";
-        for(const l of primary){ g.beginPath(); l.forEach((pt,i)=>{const [x,y]=project(pt);i?g.lineTo(x,y):g.moveTo(x,y);}); g.stroke(); } }
-      // subtle dark casing for legibility on busy topo
-      g.globalAlpha=0.5; g.strokeStyle="rgba(0,0,0,.55)"; g.lineWidth=wpx+2.4*unit; g.lineJoin="round"; g.lineCap="round";
-      for(const l of primary){ g.beginPath(); l.forEach((pt,i)=>{const [x,y]=project(pt);i?g.lineTo(x,y):g.moveTo(x,y);}); g.stroke(); }
-      g.globalAlpha=1; g.strokeStyle=S.rc; g.lineWidth=wpx;
-      for(const l of primary){ g.beginPath(); l.forEach((pt,i)=>{const [x,y]=project(pt);i?g.lineTo(x,y):g.moveTo(x,y);}); g.stroke(); }
+      const bp=S.base==="blueprint";
+      const wpx=S.pw*unit*(bp?1.3:1);
+      const stroke=(col,w,al)=>{ g.strokeStyle=col; g.globalAlpha=al; g.lineWidth=w; g.lineJoin="round"; g.lineCap="round";
+        for(const l of primary){ g.beginPath(); l.forEach((pt,i)=>{const [x,y]=project(pt);i?g.lineTo(x,y):g.moveTo(x,y);}); g.stroke(); } };
+      if(S.glow) stroke(S.rc, wpx+7*unit, 0.18);
+      // dark casing so the trail reads as the hero over busy relief (stronger in blueprint)
+      stroke(bp?"rgba(0,0,0,.9)":"rgba(0,0,0,.55)", wpx+(bp?3.4:2.4)*unit, bp?0.9:0.5);
+      stroke(S.rc, wpx, 1);
       if(S.markers){
         const flat=primary.flat(); const A=project(flat[0]), B=project(flat[flat.length-1]);
         // start triangle
@@ -287,7 +302,7 @@
   { const h=$("#layers"); LAYERS.forEach(([k,l])=>{ const t=document.createElement("span"); t.className="tog"+(S.layers.has(k)?" on":""); t.textContent=l;
     t.onclick=()=>{ S.layers.has(k)?S.layers.delete(k):S.layers.add(k); t.classList.toggle("on"); if(view&&S.base==="line")compose(); }; h.append(t); }); }
   document.querySelectorAll(".tog[data-flag]").forEach(t=>{ t.onclick=()=>{ const f=t.dataset.flag; S[f]=!S[f]; t.classList.toggle("on",S[f]);
-    if(f==="paper"&&S.base!=="line"&&view){ compose(); } else render(); }; });
+    if((f==="paper"||f==="blue")&&S.base!=="line"&&view){ compose(); } else render(); }; });
   $("#radius").oninput=e=>{ S.radius=+e.target.value; radLabel(); };
   $("#pw").oninput=e=>{ S.pw=+e.target.value; render(); };
   $("#cop").oninput=e=>{ S.cop=+e.target.value; if(view&&S.base==="line")compose(); };

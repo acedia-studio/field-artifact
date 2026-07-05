@@ -1,0 +1,252 @@
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>FIELD ARTIFACT — route outline</title>
+<style>
+  :root{
+    --bg:#0b0b0c; --panel:#141416; --panel-2:#1b1b1e; --line:#2a2a2e;
+    --ink:#f2f2ee; --dim:#8a8a86; --faint:#5a5a58; --accent:#e8613c;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    --grot: "Suisse Intl", -apple-system, "Helvetica Neue", Arial, sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font-family:var(--grot)}
+  body{display:grid;grid-template-columns:1fr 380px;grid-template-rows:100vh}
+  @media (max-width:900px){body{grid-template-columns:1fr;grid-template-rows:1fr auto}}
+  .stage{position:relative;display:flex;align-items:center;justify-content:center;padding:28px;overflow:auto}
+  canvas#out{max-width:100%;max-height:calc(100vh - 56px);display:block;border-radius:2px;
+    box-shadow:0 20px 60px rgba(0,0,0,.55), inset 0 0 0 1px rgba(255,255,255,.04)}
+  .empty{position:absolute;color:var(--faint);font-family:var(--mono);font-size:12px;letter-spacing:.1em;text-align:center;line-height:1.8}
+  .status{position:absolute;left:20px;bottom:18px;font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;color:var(--faint);text-transform:uppercase}
+  .status .dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--faint);margin-right:8px;vertical-align:middle}
+  .status.live .dot{background:var(--accent);box-shadow:0 0 0 3px rgba(232,97,60,.18)}
+
+  .panel{background:var(--panel);border-left:1px solid var(--line);overflow-y:auto}
+  .brand{display:flex;align-items:baseline;justify-content:space-between;padding:16px 18px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--panel);z-index:5}
+  .brand b{font-size:12px;letter-spacing:.3em;text-transform:uppercase;font-weight:600}
+  .brand a{font-family:var(--mono);font-size:10px;letter-spacing:.08em;color:var(--dim);text-decoration:none}
+  .sec{border-bottom:1px solid var(--line);padding:14px 18px}
+  .sec h2{font-family:var(--mono);font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--dim);margin:0 0 12px}
+  input[type=text]{width:100%;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;color:var(--ink);font-family:var(--mono);font-size:11.5px;padding:8px;letter-spacing:.02em}
+  input[type=text]:focus{outline:none;border-color:var(--accent)}
+  .hint{font-family:var(--mono);font-size:9.5px;letter-spacing:.04em;color:var(--faint);line-height:1.7;margin:8px 0 0}
+  .ctl{display:flex;align-items:center;gap:10px;margin:10px 0;font-family:var(--mono);font-size:10.5px;letter-spacing:.06em;color:var(--dim);text-transform:uppercase}
+  .ctl input[type=range]{flex:1;accent-color:var(--accent)}
+  .chips{display:flex;flex-wrap:wrap;gap:6px}
+  .chip{font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;padding:6px 10px;border:1px solid var(--line);border-radius:2px;color:var(--dim);cursor:pointer;background:var(--panel-2)}
+  .chip.on{border-color:var(--accent);color:var(--ink)}
+  .swics{display:flex;gap:6px}
+  .sw{width:26px;height:26px;border-radius:2px;border:1px solid var(--line);cursor:pointer}
+  .sw.on{box-shadow:0 0 0 2px var(--accent)}
+  .btn{width:100%;font-family:var(--mono);font-size:11px;letter-spacing:.12em;text-transform:uppercase;padding:11px;border-radius:2px;border:1px solid var(--line);background:var(--panel-2);color:var(--ink);cursor:pointer}
+  .btn.pri{background:var(--accent);border-color:var(--accent);color:#150a06;font-weight:600}
+  .btn:disabled{opacity:.4;cursor:not-allowed}
+  .btns{padding:14px 18px;display:grid;gap:8px}
+  .tog{font-family:var(--mono);font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;padding:5px 9px;border:1px solid var(--line);border-radius:2px;color:var(--faint);cursor:pointer;user-select:none}
+  .tog.on{border-color:var(--accent);color:var(--ink)}
+  .togs{display:flex;flex-wrap:wrap;gap:6px}
+</style>
+
+<div class="stage">
+  <canvas id="out" width="1200" height="900"></canvas>
+  <div class="empty" id="empty">enter a trail, road, or place<br>&amp; hit draw</div>
+  <div class="status" id="status"><span class="dot"></span><span id="statustxt">idle</span></div>
+</div>
+
+<div class="panel">
+  <div class="brand"><b>Route Outline</b><a href="./index.html">← imprint</a></div>
+
+  <div class="sec">
+    <h2>Feature</h2>
+    <input type="text" id="q" placeholder="Beartooth Highway  ·  Delta Lake Trail">
+    <div class="hint">A named trail or road (OpenStreetMap). Or a place / <span style="color:var(--dim)">lat, lon</span> to map the area around it.</div>
+    <div class="ctl" style="margin-top:12px">Mode
+      <div class="chips" id="mode"></div>
+    </div>
+    <div class="ctl">Context radius <input type="range" id="radius" min="0.5" max="12" step="0.5" value="3"><span id="radlbl" style="width:44px;text-align:right">3.0km</span></div>
+    <button class="btn pri" id="draw" style="margin-top:6px">Draw</button>
+  </div>
+
+  <div class="sec">
+    <h2>Layers</h2>
+    <div class="togs" id="layers"></div>
+  </div>
+
+  <div class="sec">
+    <h2>Style</h2>
+    <div class="ctl">Background<div class="swics" id="bg"></div></div>
+    <div class="ctl">Stroke<div class="swics" id="stroke"></div></div>
+    <div class="ctl">Route weight <input type="range" id="pw" min="1" max="8" step="0.5" value="3.5"></div>
+    <div class="ctl">Context <input type="range" id="cop" min="0" max="0.6" step="0.02" value="0.24"></div>
+    <div class="togs" style="margin-top:4px">
+      <span class="tog on" data-flag="endpoints">Endpoints</span>
+      <span class="tog on" data-flag="frame">Frame</span>
+      <span class="tog" data-flag="glow">Route glow</span>
+    </div>
+  </div>
+
+  <div class="btns">
+    <button class="btn" id="export" disabled>Export PNG</button>
+  </div>
+  <div class="hint" style="padding:0 18px 16px">Data © OpenStreetMap contributors. Geometry via Overpass, geocoding via Nominatim. All client-side.</div>
+</div>
+
+<script>
+(() => {
+  "use strict";
+  const $=s=>document.querySelector(s);
+  const cv=$("#out"), ctx=cv.getContext("2d");
+  const setStatus=(t,live=false)=>{ $("#statustxt").textContent=t; $("#status").classList.toggle("live",live); };
+  const OVERPASS=["https://maps.mail.ru/osm/tools/overpass/api/interpreter","https://overpass.kumi.systems/api/interpreter"];
+
+  const S={ mode:"route", radius:3, bg:"#07080c", stroke:"#f4f3ee", pw:3.5, cop:0.24,
+            endpoints:true, frame:true, glow:false,
+            layers:new Set(["water","waterway","path","road"]) };
+  const BGS=["#07080c","#000000","#0a1836","#101013"];
+  const STROKES=["#f4f3ee","#8fb3ff","#ffd34d","#7fffd4"];
+  let primary=[], context=[], view=null; // polylines = [[lat,lon],...]
+
+  async function ov(q){
+    for(const ep of OVERPASS){
+      try{ const r=await fetch(ep,{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:"data="+encodeURIComponent(q)});
+        const t=await r.text(); const j=JSON.parse(t); if(j&&Array.isArray(j.elements)) return j; }catch(e){}
+    }
+    return null;
+  }
+  const esc = s => s.replace(/["\\]/g,"\\$&");
+  const escRe = s => s.replace(/[.*+?^${}()|[\]\\]/g,"\\$&");
+
+  function collectLines(j){
+    const out=[];
+    for(const el of (j?.elements||[])){
+      if(el.geometry && el.geometry.length>1) out.push(el.geometry.map(p=>[p.lat,p.lon]));
+      if(el.members) for(const m of el.members) if(m.geometry && m.geometry.length>1) out.push(m.geometry.map(p=>[p.lat,p.lon]));
+    }
+    return out;
+  }
+  const bboxOf = lines => {
+    let a=90,b=-90,c=180,d=-180;
+    for(const l of lines) for(const [lat,lon] of l){ a=Math.min(a,lat);b=Math.max(b,lat);c=Math.min(c,lon);d=Math.max(d,lon); }
+    return {minLat:a,maxLat:b,minLon:c,maxLon:d};
+  };
+  const padBox = (bb,km)=>{ const dLat=km/111, dLon=km/(111*Math.cos((bb.minLat+bb.maxLat)/2*Math.PI/180));
+    return {minLat:bb.minLat-dLat,maxLat:bb.maxLat+dLat,minLon:bb.minLon-dLon,maxLon:bb.maxLon+dLon}; };
+
+  const layerFilter = () => {
+    const parts=[];
+    if(S.layers.has("water"))    parts.push('way["natural"="water"](BB);way["landuse"="reservoir"](BB);');
+    if(S.layers.has("waterway")) parts.push('way["waterway"~"river|stream|canal"](BB);');
+    if(S.layers.has("path"))     parts.push('way["highway"~"path|footway|track|steps|bridleway"](BB);');
+    if(S.layers.has("road"))     parts.push('way["highway"~"motorway|trunk|primary|secondary|tertiary|residential|unclassified|service"](BB);');
+    return parts.join("");
+  };
+
+  async function draw(){
+    const q=$("#q").value.trim();
+    if(!q && S.mode==="route"){ setStatus("enter a trail or road name",false); return; }
+    setStatus("querying openstreetmap…",true); $("#export").disabled=true;
+    primary=[]; context=[];
+
+    let viewBox=null, center=null;
+    if(S.mode==="route" && q){
+      // named feature geometry (exact, then case-insensitive contains)
+      let j=await ov(`[out:json][timeout:60];(way["name"="${esc(q)}"];relation["name"="${esc(q)}"];);out geom;`);
+      primary=collectLines(j);
+      if(!primary.length){ j=await ov(`[out:json][timeout:60];(way["name"~"${escRe(q)}",i];relation["name"~"${escRe(q)}",i]["route"];);out geom;`); primary=collectLines(j); }
+      if(!primary.length){ setStatus(`no OSM feature named “${q}” — try the exact name or Area mode`,false); return; }
+      viewBox=padBox(bboxOf(primary), S.radius);
+    } else {
+      // area mode: geocode the query (or lat,lon) -> bbox of radius
+      let lat,lon; const m=q.match(/^\s*(-?\d+(?:\.\d+)?)\s*[,\s]\s*(-?\d+(?:\.\d+)?)\s*$/);
+      if(m){ lat=+m[1]; lon=+m[2]; }
+      else if(q){ try{ const r=await fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(q)}`,{headers:{Accept:"application/json"}}); const jj=await r.json(); if(jj&&jj[0]){lat=+jj[0].lat;lon=+jj[0].lon;} }catch(e){} }
+      if(lat==null){ setStatus("couldn't find that place",false); return; }
+      center=[lat,lon]; viewBox=padBox({minLat:lat,maxLat:lat,minLon:lon,maxLon:lon}, S.radius);
+    }
+
+    // context layers inside the view box
+    const bbStr=`${viewBox.minLat},${viewBox.minLon},${viewBox.maxLat},${viewBox.maxLon}`;
+    const filt=layerFilter().replace(/BB/g,bbStr);
+    if(filt){ const j2=await ov(`[out:json][timeout:60];(${filt});out geom;`); context=collectLines(j2); }
+
+    view=viewBox; render();
+    $("#export").disabled=false;
+    const np=primary.reduce((s,l)=>s+l.length,0), nc=context.reduce((s,l)=>s+l.length,0);
+    setStatus(`drawn · ${primary.length?`route ${np} pts · `:""}${context.length} context ways`,false);
+  }
+
+  function project(view, W, H, margin){
+    const cLat=(view.minLat+view.maxLat)/2;
+    const kx=Math.cos(cLat*Math.PI/180);
+    const spanLon=(view.maxLon-view.minLon)*kx, spanLat=(view.maxLat-view.minLat);
+    const iw=W-margin*2, ih=H-margin*2;
+    const sc=Math.min(iw/spanLon, ih/spanLat);
+    const offX=margin+(iw-spanLon*sc)/2, offY=margin+(ih-spanLat*sc)/2;
+    return ([lat,lon])=>[ offX+(lon-view.minLon)*kx*sc, offY+(view.maxLat-lat)*sc ];
+  }
+
+  function render(){
+    if(!view) return;
+    $("#empty").style.display="none";
+    // canvas aspect from view bbox
+    const cLat=(view.minLat+view.maxLat)/2, kx=Math.cos(cLat*Math.PI/180);
+    const ar=((view.maxLon-view.minLon)*kx)/((view.maxLat-view.minLat)||1);
+    const LONG=1800; let W,H; if(ar>=1){ W=LONG; H=Math.round(LONG/ar); } else { H=LONG; W=Math.round(LONG*ar); }
+    W=Math.max(600,W); H=Math.max(600,H);
+    cv.width=W; cv.height=H;
+    const g=ctx;
+    if(S.bg==="transparent"){ g.clearRect(0,0,W,H); } else { g.fillStyle=S.bg; g.fillRect(0,0,W,H); }
+    const margin=Math.round(Math.min(W,H)*0.06);
+    const P=project(view,W,H,margin);
+    const unit=Math.min(W,H)/900;
+
+    const stroke=(lines,color,wpx,alpha)=>{
+      g.strokeStyle=color; g.globalAlpha=alpha; g.lineWidth=Math.max(0.5,wpx); g.lineJoin="round"; g.lineCap="round";
+      for(const l of lines){ g.beginPath(); l.forEach((pt,i)=>{ const [x,y]=P(pt); i?g.lineTo(x,y):g.moveTo(x,y); }); g.stroke(); }
+    };
+    // context (faint)
+    stroke(context, S.stroke, 1.1*unit, S.cop);
+    // primary route
+    if(primary.length){
+      if(S.glow){ stroke(primary, S.stroke, (S.pw+5)*unit, 0.12); }
+      stroke(primary, S.stroke, S.pw*unit, 0.98);
+      if(S.endpoints){
+        g.globalAlpha=1; g.fillStyle=S.accent||"#e8613c";
+        const flat=primary.flat(); const ends=[flat[0], flat[flat.length-1]];
+        for(const e of ends){ const [x,y]=P(e); g.beginPath(); g.arc(x,y,2.4*unit,0,7); g.fill(); }
+      }
+    }
+    g.globalAlpha=1;
+    if(S.frame){ g.strokeStyle=S.stroke; g.globalAlpha=0.5; g.lineWidth=Math.max(1,unit);
+      const fm=margin*0.55, len=margin*0.9;
+      [[fm,fm,1,1],[W-fm,fm,-1,1],[fm,H-fm,1,-1],[W-fm,H-fm,-1,-1]].forEach(([x,y,sx,sy])=>{
+        g.beginPath(); g.moveTo(x,y); g.lineTo(x+sx*len,y); g.moveTo(x,y); g.lineTo(x,y+sy*len); g.stroke(); });
+      g.globalAlpha=1;
+    }
+  }
+  S.accent="#e8613c";
+
+  function exportPNG(){
+    const a=document.createElement("a"); a.download="route-outline.png"; a.href=cv.toDataURL("image/png"); a.click();
+  }
+
+  // ---- UI ----
+  function chips(host,opts,cur,cb){ const h=$(host); opts.forEach(([v,l])=>{ const c=document.createElement("span");
+    c.className="chip"+(cur===v?" on":""); c.textContent=l; c.onclick=()=>{ [...h.children].forEach(x=>x.classList.remove("on")); c.classList.add("on"); cb(v); }; h.append(c); }); }
+  function swics(host,arr,cur,cb){ const h=$(host); arr.forEach(hex=>{ const s=document.createElement("span"); s.className="sw"+(cur===hex?" on":"");
+    s.style.background=hex==="transparent"?"repeating-conic-gradient(#333 0 25%,#222 0 50%) 50%/10px 10px":hex; s.title=hex;
+    s.onclick=()=>{ [...h.children].forEach(x=>x.classList.remove("on")); s.classList.add("on"); cb(hex); render(); }; h.append(s); }); }
+  chips("#mode",[["route","Route"],["area","Area"]],S.mode,v=>{S.mode=v;});
+  swics("#bg",[...BGS,"transparent"],S.bg,v=>S.bg=v);
+  swics("#stroke",STROKES,S.stroke,v=>S.stroke=v);
+  const LAYERS=[["water","Water"],["waterway","Rivers"],["path","Trails"],["road","Roads"]];
+  { const h=$("#layers"); LAYERS.forEach(([k,l])=>{ const t=document.createElement("span"); t.className="tog"+(S.layers.has(k)?" on":""); t.textContent=l;
+    t.onclick=()=>{ S.layers.has(k)?S.layers.delete(k):S.layers.add(k); t.classList.toggle("on"); }; h.append(t); }); }
+  document.querySelectorAll(".tog[data-flag]").forEach(t=>{ t.onclick=()=>{ const f=t.dataset.flag; S[f]=!S[f]; t.classList.toggle("on",S[f]); render(); }; });
+  $("#radius").oninput=e=>{ S.radius=+e.target.value; $("#radlbl").textContent=S.radius.toFixed(1)+"km"; };
+  $("#pw").oninput=e=>{ S.pw=+e.target.value; render(); };
+  $("#cop").oninput=e=>{ S.cop=+e.target.value; render(); };
+  $("#draw").onclick=draw;
+  $("#q").onkeydown=e=>{ if(e.key==="Enter"){ e.preventDefault(); draw(); } };
+  $("#export").onclick=exportPNG;
+})();
+</script>

@@ -3,6 +3,8 @@ public/
 vendor/
 test.mjs
 shot.mjs
+hif-shot.mjs
+heif-exif-test.mjs
 package.json
 package-lock.json
 /tmp

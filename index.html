@@ -85,6 +85,15 @@
 <div class="panel">
   <div class="brand"><b>Field Artifact</b><span>v1</span></div>
 
+  <div class="sec" id="loc-sec">
+    <h2>Location</h2>
+    <div id="loc-note" class="hint" style="padding:0 0 10px">Place name or <span style="color:var(--dim)">lat, lon</span>. Fills coords → elevation, peak &amp; weather.</div>
+    <div style="display:flex;gap:6px">
+      <input type="text" id="loc-input" placeholder="Bridger Range, Montana" style="flex:1;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;color:var(--ink);font-family:var(--mono);font-size:11.5px;padding:7px 8px">
+      <button class="btn" id="loc-btn" style="padding:7px 12px">Locate</button>
+    </div>
+  </div>
+
   <div class="sec">
     <h2>Data</h2>
     <div id="fields"></div>
@@ -123,8 +132,9 @@
   <div class="hint">EXIF read in your browser, nothing uploaded. Elevation / peak / weather come from open-meteo + OpenStreetMap (public, no key). Every field is editable before export.</div>
 </div>
 
-<input type="file" id="file" accept="image/*">
+<input type="file" id="file" accept="image/*,.hif,.heic,.heif">
 <script src="./exifr.umd.js"></script>
+<script src="./libheif-bundle.js"></script>
 <script>
 (() => {
   "use strict";
@@ -135,24 +145,46 @@
   // ---------- state ----------
   const D = { // display fields (all strings, editable)
     lat:"", lon:"", elev:"", range:"", rangeElev:"", date:"", time:"", tz:"",
-    temp:"", wind:"", frame:"", iso:"", fnum:"", shutter:"", status:"SEALED ARTIFACT"
+    temp:"", wind:"", frame:"", iso:"", fnum:"", shutter:"", focal:"", camera:"", status:"SEALED ARTIFACT"
   };
   const FIELD_DEFS = [
     ["lat","Lat"],["lon","Lon"],["elev","Elev"],["range","Range"],["rangeElev","Peak ele"],
     ["date","Date"],["time","Time"],["tz","TZ"],["temp","Temp"],["wind","Wind"],
-    ["frame","Frame"],["iso","ISO"],["fnum","Aperture"],["shutter","Shutter"],["status","Status"]
+    ["frame","Frame"],["iso","ISO"],["fnum","Aperture"],["shutter","Shutter"],["focal","Focal"],
+    ["camera","Camera"],["status","Status"]
   ];
   // which lines render, in order (grouped for layout)
   const show = new Set(["latlon","elev","range","datetime","weather","exposure","status"]);
   const LINE_DEFS = [
     ["latlon","Coords"],["elev","Elevation"],["range","Range"],["datetime","Date/Time"],
-    ["weather","Weather"],["exposure","Exposure"],["status","Status"]
+    ["weather","Weather"],["exposure","Exposure"],["camera","Camera"],["status","Status"]
   ];
   const T = { anchor:"bl", scale:1, margin:5, scrim:0.28, ink:"#f4f3ee", accent:"#e8613c",
               ticks:true, rule:true, serif:true };
   const INKS = ["#f4f3ee","#111111","#ffd34d","#7fffd4"];
   const ACCENTS = ["#e8613c","#ffffff","#ff3b30","#39d353","#4da3ff"];
-  let img = null, gpsLat = null, gpsLon = null, photoDate = null;
+  let img = null, imgW = 0, imgH = 0, gpsLat = null, gpsLon = null, photoDate = null;
+  let _libheif = null;
+  const getLibheif = () => (_libheif ||= Promise.resolve(typeof libheif==="function" ? libheif({}) : libheif));
+  const MAXDIM = 3600; // cap decoded HEIF so exported PNGs stay a sane size
+  function capCanvas(c){
+    const w=c.width,h=c.height, s=Math.min(1, MAXDIM/Math.max(w,h));
+    if (s>=1) return c;
+    const o=document.createElement("canvas"); o.width=Math.round(w*s); o.height=Math.round(h*s);
+    o.getContext("2d").drawImage(c,0,0,o.width,o.height); return o;
+  }
+  async function decodeHeif(u8){
+    const mod = await getLibheif();
+    const dec = new mod.HeifDecoder();
+    const imgs = dec.decode(u8);
+    if (!imgs || !imgs.length) return null;
+    const im = imgs[0], w = im.get_width(), h = im.get_height();
+    const id = new ImageData(w,h);
+    await new Promise((res,rej)=>im.display(id, d=> d?res():rej(new Error("heif display failed"))));
+    const c = document.createElement("canvas"); c.width=w; c.height=h;
+    c.getContext("2d").putImageData(id,0,0);
+    return capCanvas(c);
+  }
 
   // ---------- helpers ----------
   const pad = (n,w=2)=>String(n).padStart(w,"0");
@@ -173,19 +205,68 @@
     return `1/${d}`;
   }
 
+  // ---------- HEIF Exif extractor (exifr can't read heix/HEIF; we pull the Exif item ourselves) ----------
+  function extractHeifExif(u8){
+    try{
+      const dv=new DataView(u8.buffer,u8.byteOffset,u8.byteLength);
+      const str=(p,n)=>{let s="";for(let i=0;i<n;i++)s+=String.fromCharCode(u8[p+i]);return s;};
+      function boxes(start,end){const out=[];let p=start;
+        while(p+8<=end){let size=dv.getUint32(p);const type=str(p+4,4);let hdr=8;
+          if(size===1){size=Number(dv.getBigUint64(p+8));hdr=16;}else if(size===0){size=end-p;}
+          if(size<8||p+size>end)break; out.push({type,body:p+hdr,end:p+size}); p+=size;} return out;}
+      const meta=boxes(0,u8.length).find(b=>b.type==="meta"); if(!meta)return null;
+      const mc=boxes(meta.body+4,meta.end);
+      const iinf=mc.find(b=>b.type==="iinf"), iloc=mc.find(b=>b.type==="iloc");
+      if(!iinf||!iloc)return null;
+      let p=iinf.body; const iv=dv.getUint8(p); p+=4; p+= iv===0?2:4;
+      let exifId=null;
+      for(const infe of boxes(p,iinf.end)){ if(infe.type!=="infe")continue;
+        let q=infe.body; const v=dv.getUint8(q); q+=4;
+        if(v>=2){ const id=v===2?dv.getUint16(q):dv.getUint32(q); q+=v===2?2:4; q+=2;
+          if(str(q,4)==="Exif"){exifId=id;break;} } }
+      if(exifId==null)return null;
+      p=iloc.body; const lv=dv.getUint8(p); p+=4;
+      const b1=dv.getUint8(p),b2=dv.getUint8(p+1); p+=2;
+      const offS=b1>>4,lenS=b1&0xf,baseS=b2>>4,idxS=b2&0xf;
+      const cnt= lv<2?dv.getUint16(p):dv.getUint32(p); p+= lv<2?2:4;
+      const readN=(pos,n)=>{let v=0;for(let i=0;i<n;i++)v=v*256+dv.getUint8(pos+i);return v;};
+      let found=null;
+      for(let i=0;i<cnt;i++){ const id= lv<2?dv.getUint16(p):dv.getUint32(p); p+= lv<2?2:4;
+        if(lv===1||lv===2)p+=2; p+=2; const base=readN(p,baseS); p+=baseS;
+        const ec=dv.getUint16(p); p+=2; let first=null;
+        for(let e=0;e<ec;e++){ if((lv===1||lv===2)&&idxS>0)p+=idxS;
+          const eo=readN(p,offS); p+=offS; const el=readN(p,lenS); p+=lenS; if(e===0)first={off:base+eo,len:el}; }
+        if(id===exifId){found=first;break;} }
+      if(!found)return null;
+      const seg=u8.subarray(found.off,found.off+found.len);
+      const to=new DataView(seg.buffer,seg.byteOffset,4).getUint32(0);
+      return seg.subarray(4+to);
+    }catch(e){ console.warn("heif exif", e); return null; }
+  }
+  const isHeif = f => /\.(hif|heic|heif|heics|hevc|avif)$/i.test(f.name||"");
+
   // ---------- EXIF ----------
+  const EXOPT = { gps:true, tiff:true, exif:true, ifd0:true, translateValues:true, reviveValues:true };
   async function readImage(file){
-    setStatus("reading exif…", true);
-    // draw preview immediately from the raw file
-    const url = URL.createObjectURL(file);
-    img = new Image();
-    await new Promise((res,rej)=>{ img.onload=res; img.onerror=rej; img.src=url; });
+    setStatus(isHeif(file)?"decoding heif…":"reading exif…", true);
+    img = null; imgW = 0; imgH = 0;
+    let ex = {};
+    if (isHeif(file)){
+      const u8 = new Uint8Array(await file.arrayBuffer());
+      const tiff = extractHeifExif(u8);
+      if (tiff){ try{ ex = await exifr.parse(tiff, EXOPT) || {}; }catch(e){ console.warn("exifr tiff", e); } }
+      try{ const c = await decodeHeif(u8); if (c){ img=c; imgW=c.width; imgH=c.height; } }
+      catch(e){ console.warn("heif decode", e); }
+    } else {
+      try { ex = await exifr.parse(file, EXOPT) || {}; }
+      catch(e){ console.warn("exifr", e); }
+      try{ const url = URL.createObjectURL(file); const im = new Image();
+        await new Promise((res,rej)=>{ im.onload=res; im.onerror=rej; im.src=url; });
+        img=im; imgW=im.naturalWidth; imgH=im.naturalHeight;
+      }catch(e){ img=null; }
+    }
     drop.classList.add("hidden");
     render();
-
-    let ex = {};
-    try { ex = await exifr.parse(file, { gps:true, tiff:true, exif:true, ifd0:true, translateValues:true, reviveValues:true }) || {}; }
-    catch(e){ console.warn("exifr", e); }
 
     // gps
     let lat = ex.latitude, lon = ex.longitude;
@@ -202,15 +283,18 @@
     const dt = ex.DateTimeOriginal || ex.CreateDate || ex.ModifyDate;
     if (dt instanceof Date && !isNaN(dt)){
       photoDate = dt;
-      D.date = `${dt.getFullYear()}.${pad(dt.getMonth()+1)}.${pad(dt.getDate())}`;
-      D.time = `${pad(dt.getHours())}:${pad(dt.getMinutes())}`;
+      // exifr stores the EXIF wall-clock as UTC, so read UTC components (else it shifts by the viewer's TZ)
+      D.date = `${dt.getUTCFullYear()}.${pad(dt.getUTCMonth()+1)}.${pad(dt.getUTCDate())}`;
+      D.time = `${pad(dt.getUTCHours())}:${pad(dt.getUTCMinutes())}`;
     }
 
     // exposure
     if (ex.ISO!=null) D.iso = `ISO ${Array.isArray(ex.ISO)?ex.ISO[0]:ex.ISO}`;
     if (ex.FNumber!=null) D.fnum = `${Number(ex.FNumber).toFixed(1).replace(/\.0$/,"")}`;
     if (ex.ExposureTime!=null) D.shutter = shutterStr(Number(ex.ExposureTime));
+    if (ex.FocalLength!=null) D.focal = `${Math.round(Number(ex.FocalLength))}MM`;
     if (ex.ImageNumber!=null) D.frame = `${pad(ex.ImageNumber,3)}`;
+    if (ex.Model) D.camera = `${ex.Model}`.toUpperCase();
 
     buildFields();
     render();
@@ -221,8 +305,18 @@
     setStatus(bits.length? `exif read · ${bits.join(" · ")}` : "exif read · enriching…", true);
 
     // enrichment (needs GPS)
-    if (gpsLat!=null) await enrich();
-    setStatus(gpsLat!=null?"ready":"ready · GPS missing, fill Coords by hand", false);
+    const locSec = $("#loc-sec"), locNote = $("#loc-note");
+    if (gpsLat!=null){
+      locSec.style.opacity="0.55";
+      await enrich();
+      setStatus("ready", false);
+    } else {
+      // no GPS in file (e.g. Fujifilm) -> nudge toward the Location box
+      locSec.style.opacity="1";
+      locNote.innerHTML="<b style='color:var(--accent)'>No GPS in this file.</b> Type where it was shot (place name or <span style='color:var(--dim)'>lat, lon</span>) to fill elevation, peak &amp; weather.";
+      $("#loc-input").focus();
+      setStatus("exif read · no GPS — enter a location", false);
+    }
   }
 
   // ---------- enrichment ----------
@@ -256,6 +350,30 @@
 
     await Promise.all(jobs);
     buildFields(); render();
+  }
+
+  // manual location (his camera writes no GPS): place name or "lat, lon" -> coords -> enrich
+  async function geocode(query){
+    const q=(query||"").trim(); if(!q) return;
+    setStatus("locating…",true);
+    let lat,lon;
+    const m=q.match(/^\s*(-?\d+(?:\.\d+)?)\s*[,\s]\s*(-?\d+(?:\.\d+)?)\s*$/);
+    if(m){ lat=+m[1]; lon=+m[2]; }
+    else{
+      try{
+        const r=await fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(q)}`,{headers:{Accept:"application/json"}});
+        const j=await r.json();
+        if(j&&j[0]){ lat=+j[0].lat; lon=+j[0].lon; }
+      }catch(e){}
+    }
+    if(lat==null||isNaN(lat)||isNaN(lon)){ setStatus("couldn't find that place — try 'lat, lon'",false); return; }
+    gpsLat=lat; gpsLon=lon;
+    D.lat=`${Math.abs(lat).toFixed(4)}° ${lat>=0?"N":"S"}`;
+    D.lon=`${Math.abs(lon).toFixed(4)}° ${lon>=0?"E":"W"}`;
+    D.elev=""; D.range=""; D.rangeElev=""; D.temp=""; D.wind=""; D.tz=""; // re-derive for the new spot
+    buildFields(); render();
+    if (photoDate || true) await enrich();
+    setStatus("located · enriched",false);
   }
 
   async function nearestPeak(lat,lon){
@@ -292,7 +410,9 @@
   }
 
   async function weatherAt(lat,lon,d){
-    const ymd = `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+    // photoDate carries the EXIF wall-clock in UTC components (see readImage) -> read UTC
+    const hh = d.getUTCHours();
+    const ymd = `${d.getUTCFullYear()}-${pad(d.getUTCMonth()+1)}-${pad(d.getUTCDate())}`;
     const hourly = "temperature_2m,wind_speed_10m,wind_direction_10m";
     const base = `latitude=${lat}&longitude=${lon}&hourly=${hourly}&wind_speed_unit=kmh&timezone=auto&start_date=${ymd}&end_date=${ymd}`;
     let j = await fetch(`https://archive-api.open-meteo.com/v1/archive?${base}`).then(r=>r.json()).catch(()=>null);
@@ -301,11 +421,11 @@
       j = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&hourly=${hourly}&wind_speed_unit=kmh&timezone=auto&past_days=14&forecast_days=1`).then(r=>r.json()).catch(()=>null);
     }
     if (!j || !j.hourly || !j.hourly.time) return null;
-    const target = `${ymd}T${pad(d.getHours())}:00`;
+    const target = `${ymd}T${pad(hh)}:00`;
     let idx = j.hourly.time.indexOf(target);
     if (idx<0){ // nearest hour on that day
       let best=-1,bd=1e9;
-      j.hourly.time.forEach((t,i)=>{ if(t.startsWith(ymd)){ const hh=+t.slice(11,13); const diff=Math.abs(hh-d.getHours()); if(diff<bd){bd=diff;best=i;} }});
+      j.hourly.time.forEach((t,i)=>{ if(t.startsWith(ymd)){ const h2=+t.slice(11,13); const diff=Math.abs(h2-hh); if(diff<bd){bd=diff;best=i;} }});
       idx=best;
     }
     if (idx<0) return null;
@@ -333,17 +453,18 @@
     push("range",   [D.range, D.rangeElev]);
     push("datetime",[[D.date,D.time].filter(Boolean).join(" / "), D.tz]);
     push("weather", [D.temp && `TEMP ${D.temp}`, D.wind && `WIND ${D.wind}`]);
-    push("exposure",[D.frame && `FRAME ${D.frame}`, D.iso, D.fnum && `${T.serif?"ƒ":"F"}${D.fnum}`, D.shutter]);
+    push("exposure",[D.frame && `FRAME ${D.frame}`, D.iso, D.fnum && `${T.serif?"ƒ":"F"}${D.fnum}`, D.shutter, D.focal]);
+    push("camera",  [D.camera]);
     push("status",  [D.status && `STATUS: ${D.status}`]);
     return L;
   }
 
   function render(){
-    if (!img){ return; }
-    const W=img.naturalWidth, H=img.naturalHeight;
+    const W = img?imgW:1600, H = img?imgH:1000;
     cv.width=W; cv.height=H;
     ctx.clearRect(0,0,W,H);
-    ctx.drawImage(img,0,0,W,H);
+    if(img){ ctx.drawImage(img,0,0,W,H); }
+    else { ctx.fillStyle="#0e0e10"; ctx.fillRect(0,0,W,H); }
     drawOverlay(ctx,W,H);
   }
 
@@ -433,11 +554,10 @@
 
   // ---------- export ----------
   function exportPNG(composited){
-    if (!img) return;
-    const W=img.naturalWidth,H=img.naturalHeight;
+    const W=img?imgW:1600, H=img?imgH:1000;
     const c=document.createElement("canvas"); c.width=W;c.height=H;
     const g=c.getContext("2d");
-    if (composited){ g.drawImage(img,0,0,W,H); }
+    if (composited && img){ g.drawImage(img,0,0,W,H); }
     else { g.clearRect(0,0,W,H); }
     drawOverlay(g,W,H);
     const a=document.createElement("a");
@@ -491,16 +611,19 @@
   });
   $("#btn-card").onclick=()=>exportPNG(false);
   $("#btn-comp").onclick=()=>exportPNG(true);
+  $("#loc-btn").onclick=()=>geocode($("#loc-input").value);
+  $("#loc-input").onkeydown=e=>{ if(e.key==="Enter"){ e.preventDefault(); geocode($("#loc-input").value); } };
 
   // file input + drag/drop
-  function handleFile(f){ if(!f) return;
+  const acceptable = f => f && (/(^image\/)/.test(f.type) || isHeif(f));
+  function handleFile(f){ if(!acceptable(f)) return;
     $("#btn-card").disabled=false; $("#btn-comp").disabled=false;
     readImage(f);
   }
   $("#file").onchange=e=>handleFile(e.target.files[0]);
   ["dragenter","dragover"].forEach(ev=>document.addEventListener(ev,e=>{e.preventDefault();drop.classList.add("hot");}));
   ["dragleave","drop"].forEach(ev=>document.addEventListener(ev,e=>{e.preventDefault();if(ev==="drop"||e.relatedTarget===null)drop.classList.remove("hot");}));
-  document.addEventListener("drop",e=>{ e.preventDefault(); const f=e.dataTransfer.files[0]; if(f&&f.type.startsWith("image")) handleFile(f); });
+  document.addEventListener("drop",e=>{ e.preventDefault(); handleFile(e.dataTransfer.files[0]); });
 
   // init
   buildFields(); buildTogs(); buildAnchors();

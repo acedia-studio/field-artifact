@@ -62,7 +62,7 @@
     <div class="ctl" style="margin-top:12px">Mode
       <div class="chips" id="mode"></div>
     </div>
-    <div class="ctl">Context radius <input type="range" id="radius" min="0.5" max="14" step="0.5" value="3"><span id="radlbl" style="width:44px;text-align:right">3.0km</span></div>
+    <div class="ctl">Frame <input type="range" id="radius" min="0.5" max="14" step="0.5" value="3"><span id="radlbl" style="width:44px;text-align:right">~71%</span></div>
     <button class="btn pri" id="draw" style="margin-top:6px">Draw</button>
   </div>
 
@@ -105,11 +105,11 @@
   const setStatus=(t,live=false)=>{ $("#statustxt").textContent=t; $("#status").classList.toggle("live",live); };
   const OVERPASS=["https://maps.mail.ru/osm/tools/overpass/api/interpreter","https://overpass.kumi.systems/api/interpreter"];
 
-  const S={ mode:"route", radius:3, base:"topo", rc:"#e8442c", pw:4, cop:0.24, bg:"#07080c",
+  const S={ mode:"route", radius:3, base:"line", rc:"#f4f3ee", pw:4.5, cop:0.3, bg:"#000000",
             markers:true, frame:true, glow:false, paper:false,
             layers:new Set(["water","waterway","path","road"]) };
-  const BGS=["#07080c","#000000","#0a1836","#f2ece0"];
-  const RCS=["#e8442c","#e8613c","#f4f3ee","#111111","#1a3a6b"];
+  const BGS=["#000000","#0b0b0c","#f4f3ee","#0a1836"];
+  const RCS=["#f4f3ee","#111111","#e8442c","#e8613c","#1a3a6b"];
   // base map tile sources (all CORS-enabled for canvas export)
   const sub=(txy)=>"abc"[(txy)%3];
   const BASES={
@@ -198,7 +198,11 @@
       primary=collectLines(j);
       if(!primary.length){ j=await ov(`[out:json][timeout:60];(way["name"~"${escRe(q)}",i];relation["name"~"${escRe(q)}",i]["route"];);out geom;`); primary=collectLines(j); }
       if(!primary.length){ setStatus(`no OSM feature named “${q}” — try the exact name or Area mode`,false); return; }
-      viewBox=padBox(bboxOf(primary), S.radius);
+      // frame the route to fill the frame (~70% by default); slider controls the margin
+      const bb=bboxOf(primary);
+      const mspan=Math.max(bb.maxLat-bb.minLat, bb.maxLon-bb.minLon, 0.0008);
+      const mf=S.radius/15; // radius 3 -> 0.2 margin -> route ~71% of frame
+      viewBox={minLat:bb.minLat-mspan*mf, maxLat:bb.maxLat+mspan*mf, minLon:bb.minLon-mspan*mf, maxLon:bb.maxLon+mspan*mf};
     } else {
       let lat,lon; const m=q.match(/^\s*(-?\d+(?:\.\d+)?)\s*[,\s]\s*(-?\d+(?:\.\d+)?)\s*$/);
       if(m){ lat=+m[1]; lon=+m[2]; }
@@ -273,7 +277,9 @@
     c.className="chip"+(cur===v?" on":""); c.textContent=l; c.onclick=()=>{ [...h.children].forEach(x=>x.classList.remove("on")); c.classList.add("on"); cb(v); }; h.append(c); }); }
   function swics(host,arr,cur,cb){ const h=$(host); arr.forEach(hex=>{ const s=document.createElement("span"); s.className="sw"+(cur===hex?" on":"");
     s.style.background=hex; s.title=hex; s.onclick=()=>{ [...h.children].forEach(x=>x.classList.remove("on")); s.classList.add("on"); cb(hex); }; h.append(s); }); }
-  chips("#mode",[["route","Route"],["area","Area"]],S.mode,v=>{S.mode=v;});
+  const radLabel=()=>{ if(S.mode==="area"){ $("#radlbl").textContent=S.radius.toFixed(1)+"km"; }
+    else { const mf=S.radius/15; $("#radlbl").textContent="~"+Math.round(100/(1+2*mf))+"%"; } };
+  chips("#mode",[["route","Route"],["area","Area"]],S.mode,v=>{S.mode=v; radLabel(); });
   chips("#base",Object.entries(BASES).map(([k,v])=>[k,v.label]),S.base,v=>{ S.base=v; syncModeUI(); if(view) compose(); });
   swics("#rc",RCS,S.rc,v=>{S.rc=v;render();});
   swics("#bg",BGS,S.bg,v=>{S.bg=v; if(view&&S.base==="line") compose();});
@@ -282,12 +288,12 @@
     t.onclick=()=>{ S.layers.has(k)?S.layers.delete(k):S.layers.add(k); t.classList.toggle("on"); if(view&&S.base==="line")compose(); }; h.append(t); }); }
   document.querySelectorAll(".tog[data-flag]").forEach(t=>{ t.onclick=()=>{ const f=t.dataset.flag; S[f]=!S[f]; t.classList.toggle("on",S[f]);
     if(f==="paper"&&S.base!=="line"&&view){ compose(); } else render(); }; });
-  $("#radius").oninput=e=>{ S.radius=+e.target.value; $("#radlbl").textContent=S.radius.toFixed(1)+"km"; };
+  $("#radius").oninput=e=>{ S.radius=+e.target.value; radLabel(); };
   $("#pw").oninput=e=>{ S.pw=+e.target.value; render(); };
   $("#cop").oninput=e=>{ S.cop=+e.target.value; if(view&&S.base==="line")compose(); };
   $("#draw").onclick=draw;
   $("#q").onkeydown=e=>{ if(e.key==="Enter"){ e.preventDefault(); draw(); } };
   $("#export").onclick=exportPNG;
-  syncModeUI();
+  syncModeUI(); radLabel();
 })();
 </script>
